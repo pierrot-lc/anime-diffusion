@@ -1,0 +1,12 @@
+defaults:
+  - _self_
+  - model: small
+  - data: anime
+
+seed: 0
+device: auto
+mode: online
+
+hydra:
+  job:
+    chdir: true
