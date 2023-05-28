@@ -2,6 +2,7 @@ defaults:
   - _self_
   - model: small
   - data: anime
+  - train: default
 
 seed: 0
 device: auto
