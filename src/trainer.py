@@ -34,7 +34,7 @@ class Trainer:
         self.device = device
 
         self.betas = torch.linspace(0.0001, 0.02, self.n_steps, device=self.device)
-        self.mse_loss = nn.MSELoss(reduction="mean")
+        self.loss_fn = nn.HuberLoss(reduction="mean")
 
     @torch.no_grad()
     def sample_images(self, images: torch.Tensor) -> torch.Tensor:
@@ -46,7 +46,8 @@ class Trainer:
 
             # Subtract the mean noise.
             factor = (
-                self.one_minus_alphas[timesteps] / self.sqrt_one_minus_alphas[timesteps]
+                self.one_minus_alphas[timesteps]
+                / self.sqrt_one_minus_alphas_cumprod[timesteps]
             )
             factor = rearrange(factor, "b -> b () () ()")
             images = images - factor * self.model(images, timesteps)
@@ -64,6 +65,8 @@ class Trainer:
             factor = rearrange(factor, "b -> b () () ()")
             images = images + factor * z
 
+        images = (images + 1) / 2  # To range [0, 1].
+        images.clip_(0, 1)
         return images
 
     def training_step(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -85,9 +88,9 @@ class Trainer:
         noises = torch.randn_like(images, device=self.device)
 
         # Compute the noisy images.
-        blur_factor = rearrange(self.sqrt_alphas[timesteps], "b -> b () () ()")
+        blur_factor = rearrange(self.sqrt_alphas_cumprod[timesteps], "b -> b () () ()")
         noise_factor = rearrange(
-            self.sqrt_one_minus_alphas[timesteps], "b -> b () () ()"
+            self.sqrt_one_minus_alphas_cumprod[timesteps], "b -> b () () ()"
         )
         noisy_images = blur_factor * images + noise_factor * noises
 
@@ -95,7 +98,7 @@ class Trainer:
         predicted_noises = self.model(noisy_images, timesteps)
 
         # Compute the loss.
-        loss = self.mse_loss(noises, predicted_noises)
+        loss = self.loss_fn(noises, predicted_noises)
 
         return {"loss": loss}
 
@@ -153,6 +156,10 @@ class Trainer:
         return 1.0 - self.betas
 
     @property
+    def sqrt_alphas(self) -> torch.Tensor:
+        return torch.sqrt(self.alphas)
+
+    @property
     def one_minus_alphas(self) -> torch.Tensor:
         return 1.0 - self.alphas
 
@@ -161,11 +168,11 @@ class Trainer:
         return torch.cumprod(self.alphas, dim=0)
 
     @property
-    def sqrt_alphas(self) -> torch.Tensor:
+    def sqrt_alphas_cumprod(self) -> torch.Tensor:
         return torch.sqrt(self.alphas_cumprod)
 
     @property
-    def sqrt_one_minus_alphas(self) -> torch.Tensor:
+    def sqrt_one_minus_alphas_cumprod(self) -> torch.Tensor:
         return torch.sqrt(1.0 - self.alphas_cumprod)
 
     @property
