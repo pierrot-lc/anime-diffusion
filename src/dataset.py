@@ -9,6 +9,7 @@ from torchvision.transforms.functional import resize
 class ImageDataset(Dataset):
     def __init__(self, image_paths: list[Path], image_size: int):
         self.image_paths = image_paths
+        self.image_paths = [image_paths[0] for _ in range(len(image_paths))]
         self.image_size = image_size
 
     def __len__(self) -> int:

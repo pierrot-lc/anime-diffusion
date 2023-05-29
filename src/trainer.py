@@ -1,13 +1,15 @@
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
+import imageio.v3 as iio
+import numpy as np
 import torch
 import torch.nn as nn
 import wandb
 from einops import rearrange
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from torchvision.transforms.functional import pad
 from tqdm import tqdm
 
 from .model import DiffusionModel
@@ -36,39 +38,6 @@ class Trainer:
         self.betas = torch.linspace(0.0001, 0.02, self.n_steps, device=self.device)
         self.loss_fn = nn.HuberLoss(reduction="mean")
 
-    @torch.no_grad()
-    def sample_images(self, images: torch.Tensor) -> torch.Tensor:
-        """Use the model to sample using the given initial noise."""
-        for timestep in reversed(range(self.n_steps)):
-            timesteps = torch.full(
-                (images.shape[0],), fill_value=timestep, device=self.device
-            )
-
-            # Subtract the mean noise.
-            factor = (
-                self.one_minus_alphas[timesteps]
-                / self.sqrt_one_minus_alphas_cumprod[timesteps]
-            )
-            factor = rearrange(factor, "b -> b () () ()")
-            images = images - factor * self.model(images, timesteps)
-
-            factor = self.sqrt_alphas[timesteps]
-            factor = rearrange(factor, "b -> b () () ()")
-            images = images / factor
-
-            # Add random variance.
-            if timestep != 0:
-                z = torch.randn_like(images, device=self.device)
-            else:
-                z = torch.zeros_like(images, device=self.device)
-            factor = self.posterior_variance[timesteps]
-            factor = rearrange(factor, "b -> b () () ()")
-            images = images + factor * z
-
-        images = (images + 1) / 2  # To range [0, 1].
-        images.clip_(0, 1)
-        return images
-
     def training_step(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """Do a training step over the given images and compute metrics.
 
@@ -86,13 +55,7 @@ class Trainer:
             0, self.n_steps, (images.shape[0],), device=self.device
         )
         noises = torch.randn_like(images, device=self.device)
-
-        # Compute the noisy images.
-        blur_factor = rearrange(self.sqrt_alphas_cumprod[timesteps], "b -> b () () ()")
-        noise_factor = rearrange(
-            self.sqrt_one_minus_alphas_cumprod[timesteps], "b -> b () () ()"
-        )
-        noisy_images = blur_factor * images + noise_factor * noises
+        noisy_images = self.q_sample(images, noises, timesteps)
 
         # Predict the noises.
         predicted_noises = self.model(noisy_images, timesteps)
@@ -139,7 +102,7 @@ class Trainer:
             for _ in tqdm(range(self.n_epochs), desc="Epoch"):
                 self.do_epoch()
 
-                metrics = self.evaluate(self.test_loader)
+                metrics: dict[str, Any] = self.evaluate(self.test_loader)
                 images = torch.randn(
                     6,
                     self.model.n_channels,
@@ -149,7 +112,112 @@ class Trainer:
                 )
                 images = self.sample_images(images)
                 metrics["images"] = wandb.Image(images)
+
                 run.log(metrics)
+
+                image = next(iter(self.train_loader))[:1]
+                image = image.to(self.device)
+                image = self.q_sample(
+                    image, torch.randn_like(image), torch.LongTensor([self.n_steps - 1])
+                )
+                self.p_gif(image[0], Path("sample.gif"))
+
+    @torch.no_grad()
+    def q_sample(
+        self, images: torch.Tensor, noises: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
+        """Sample from the diffusion distribution."""
+        blur_factor = rearrange(self.sqrt_alphas_cumprod[timesteps], "b -> b () () ()")
+        noise_factor = rearrange(
+            self.sqrt_one_minus_alphas_cumprod[timesteps], "b -> b () () ()"
+        )
+        noisy_images = blur_factor * images + noise_factor * noises
+
+        return noisy_images
+
+    @torch.no_grad()
+    def p_sample(self, images: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+        """Sample from the posterior distribution."""
+        # Subtract the mean noise.
+        factor = self.betas[timesteps] / self.sqrt_one_minus_alphas_cumprod[timesteps]
+        factor = rearrange(factor, "b -> b () () ()")
+        images = images - factor * self.model(images, timesteps)
+
+        factor = self.sqrt_alphas[timesteps]
+        factor = rearrange(factor, "b -> b () () ()")
+        images = images / factor
+
+        # Add random variance.
+        z = torch.randn_like(images, device=self.device)
+        z[timesteps == 0] = 0
+        factor = self.posterior_std[timesteps]
+        factor = rearrange(factor, "b -> b () () ()")
+        images = images + factor * z
+
+        return images
+
+    @torch.no_grad()
+    def q_gif(self, image: torch.Tensor, gif_filename: Path):
+        """Generate a GIF of the diffusion process.
+
+        ---
+        Args:
+            image: The plain image (without noise) to start from.
+                Shape of [n_channels, image_size, image_size].
+            gif_filename: The path to the GIF file to save.
+        """
+        assert len(image.shape) == 3, "Expected a single image."
+        gif = [image]
+        image = image.unsqueeze(0)
+
+        for t in range(self.n_steps):
+            timestep = torch.full((1,), t, device=self.device, dtype=torch.long)
+            noise = torch.randn_like(image, device=self.device)
+            image = self.q_sample(image, noise, timestep)
+            gif.append(image[0])
+
+        frames = torch.stack(gif)
+        frames = Trainer.postprocess(frames)
+        iio.imwrite(gif_filename, frames, duration=20)
+
+    @torch.no_grad()
+    def p_gif(self, image: torch.Tensor, gif_filename: Path):
+        """Generate a GIF of the posterior process.
+
+        ---
+        Args:
+            image: The plain noise to start from.
+                Shape of [n_channels, image_size, image_size].
+            gif_filename: The path to the GIF file to save.
+        """
+        assert len(image.shape) == 3, "Expected a single image."
+        gif = [image]
+        image = image.unsqueeze(0)
+
+        for t in reversed(range(self.n_steps)):
+            timestep = torch.full((1,), t, device=self.device, dtype=torch.long)
+            image = self.p_sample(image, timestep)
+            gif.append(image[0])
+
+        frames = torch.stack(gif)
+        frames = Trainer.postprocess(frames)
+        iio.imwrite(gif_filename, frames, duration=20)
+
+    @torch.no_grad()
+    def sample_images(self, images: torch.Tensor) -> torch.Tensor:
+        """Use the model to sample using the given initial noise."""
+        for timestep in reversed(range(self.n_steps)):
+            timesteps = torch.full(
+                (images.shape[0],),
+                fill_value=timestep,
+                device=self.device,
+                dtype=torch.long,
+            )
+            images = self.p_sample(images, timesteps)
+
+        images = (images + 1) / 2
+        images = images.clamp(0, 1)
+        return images
 
     @property
     def alphas(self) -> torch.Tensor:
@@ -181,3 +249,18 @@ class Trainer:
             [torch.FloatTensor([1.0]).to(self.device), self.alphas_cumprod[:-1]], dim=0
         )
         return self.betas * (1.0 - alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+
+    @property
+    def posterior_std(self) -> torch.Tensor:
+        return torch.sqrt(self.posterior_variance)
+
+    @staticmethod
+    def postprocess(images: torch.Tensor) -> np.ndarray:
+        """Denormalize the images and return a uint8 numpy array version."""
+        images = (images + 1) / 2
+        images = images.clamp(0, 1)
+        images = images * 255
+        images = rearrange(images, "b c h w -> b h w c")
+        np_images = images.cpu().numpy()
+        np_images = np_images.astype(np.uint8)
+        return np_images
