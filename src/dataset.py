@@ -30,7 +30,8 @@ class ImageDataset(Dataset):
         """
         image_path = self.image_paths[index]
         image = read_image(str(image_path), mode=ImageReadMode.RGB)
-        image = (image * 2 - 255) / 255.0  # Normalize to [-1, 1].
+        image = image / 255.0  # Normalize to [0, 1].
+        image = (image - 0.5) * 2  # Normalize to [-1, 1].
         image = resize(image, size=[self.image_size, self.image_size], antialias=True)
         return image
 

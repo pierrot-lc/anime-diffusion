@@ -127,32 +127,34 @@ class Trainer:
         self, images: torch.Tensor, noises: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
         """Sample from the diffusion distribution."""
-        blur_factor = rearrange(self.sqrt_alphas_cumprod[timesteps], "b -> b () () ()")
-        noise_factor = rearrange(
+        mean_factor = rearrange(self.sqrt_alphas_cumprod[timesteps], "b -> b () () ()")
+        std_factor = rearrange(
             self.sqrt_one_minus_alphas_cumprod[timesteps], "b -> b () () ()"
         )
-        noisy_images = blur_factor * images + noise_factor * noises
+        noisy_images = mean_factor * images + std_factor * noises
 
         return noisy_images
 
     @torch.no_grad()
     def p_sample(self, images: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        """Sample from the posterior distribution."""
+        """Sample from the reverse diffusion distribution."""
         # Subtract the mean noise.
-        factor = self.betas[timesteps] / self.sqrt_one_minus_alphas_cumprod[timesteps]
-        factor = rearrange(factor, "b -> b () () ()")
-        images = images - factor * self.model(images, timesteps)
+        mean_factor = (
+            self.betas[timesteps] / self.sqrt_one_minus_alphas_cumprod[timesteps]
+        )
+        mean_factor = rearrange(mean_factor, "b -> b () () ()")
+        images = images - mean_factor * self.model(images, timesteps)
 
-        factor = self.sqrt_alphas[timesteps]
-        factor = rearrange(factor, "b -> b () () ()")
-        images = images / factor
+        mean_factor = self.sqrt_alphas[timesteps]
+        mean_factor = rearrange(mean_factor, "b -> b () () ()")
+        images = images / mean_factor
 
         # Add random variance.
         z = torch.randn_like(images, device=self.device)
         z[timesteps == 0] = 0
-        factor = self.posterior_std[timesteps]
-        factor = rearrange(factor, "b -> b () () ()")
-        images = images + factor * z
+        std_factor = self.posterior_std[timesteps]
+        std_factor = rearrange(std_factor, "b -> b () () ()")
+        images = images + std_factor * z
 
         return images
 
@@ -182,7 +184,7 @@ class Trainer:
 
     @torch.no_grad()
     def p_gif(self, image: torch.Tensor, gif_filename: Path):
-        """Generate a GIF of the posterior process.
+        """Generate a GIF of the revserse diffusion process.
 
         ---
         Args:
@@ -226,10 +228,6 @@ class Trainer:
     @property
     def sqrt_alphas(self) -> torch.Tensor:
         return torch.sqrt(self.alphas)
-
-    @property
-    def one_minus_alphas(self) -> torch.Tensor:
-        return 1.0 - self.alphas
 
     @property
     def alphas_cumprod(self) -> torch.Tensor:
