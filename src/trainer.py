@@ -117,10 +117,11 @@ class Trainer:
 
                 image = next(iter(self.train_loader))[:1]
                 image = image.to(self.device)
+                self.q_gif(image[0], Path("q-sample.gif"))
                 image = self.q_sample(
                     image, torch.randn_like(image), torch.LongTensor([self.n_steps - 1])
                 )
-                self.p_gif(image[0], Path("sample.gif"))
+                self.p_gif(image[0], Path("p-sample.gif"))
 
     @torch.no_grad()
     def q_sample(
@@ -169,13 +170,14 @@ class Trainer:
             gif_filename: The path to the GIF file to save.
         """
         assert len(image.shape) == 3, "Expected a single image."
-        gif = [image]
-        image = image.unsqueeze(0)
 
+        gif = [image]
+        noises = torch.randn((self.n_steps, *image.shape), device=self.device)
+
+        image = image.unsqueeze(0)  # Add batch dimension.
         for t in range(self.n_steps):
             timestep = torch.full((1,), t, device=self.device, dtype=torch.long)
-            noise = torch.randn_like(image, device=self.device)
-            image = self.q_sample(image, noise, timestep)
+            image = self.q_sample(image, noises[t], timestep)
             gif.append(image[0])
 
         frames = torch.stack(gif)
@@ -184,7 +186,7 @@ class Trainer:
 
     @torch.no_grad()
     def p_gif(self, image: torch.Tensor, gif_filename: Path):
-        """Generate a GIF of the revserse diffusion process.
+        """Generate a GIF of the reverse diffusion process.
 
         ---
         Args:
