@@ -16,6 +16,7 @@ dependencies = [
     "tqdm>=4.65.0",
     "torchvision>=0.15.2",
     "numpy>=1.25.0",
+    "positional-encodings[pytorch]>=6.0.1",
 ]
 requires-python = ">=3.11"
 license = {text = "MIT"}
