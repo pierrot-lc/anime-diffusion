@@ -177,12 +177,12 @@ class Trainer:
         image = image.unsqueeze(0)  # Add batch dimension.
         for t in range(self.n_steps):
             timestep = torch.full((1,), t, device=self.device, dtype=torch.long)
-            image = self.q_sample(image, noises[t], timestep)
-            gif.append(image[0])
+            noisy_image = self.q_sample(image, noises[t], timestep)
+            gif.append(noisy_image[0])
 
         frames = torch.stack(gif)
         frames = Trainer.postprocess(frames)
-        iio.imwrite(gif_filename, frames, duration=20)
+        iio.imwrite(gif_filename, frames, duration=100)
 
     @torch.no_grad()
     def p_gif(self, image: torch.Tensor, gif_filename: Path):
@@ -205,7 +205,7 @@ class Trainer:
 
         frames = torch.stack(gif)
         frames = Trainer.postprocess(frames)
-        iio.imwrite(gif_filename, frames, duration=20)
+        iio.imwrite(gif_filename, frames, duration=100)
 
     @torch.no_grad()
     def sample_images(self, images: torch.Tensor) -> torch.Tensor:

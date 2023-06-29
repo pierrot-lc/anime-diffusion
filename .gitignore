@@ -2,3 +2,5 @@ datasets/
 .venv/
 **/__pycache__/
 outputs/
+.pdm-python
+pdm.lock
